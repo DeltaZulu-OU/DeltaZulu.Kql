@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>DeltaZulu.Kql.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.Kusto.Language" VersionOverride="[12.4.1]" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="MSTest.TestAdapter" />
+    <PackageReference Include="MSTest.TestFramework" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The CEILING of the version span (CON-0006). The sibling project tests the
+      shipped assembly against the 9.2.0 floor; this one recompiles the library
+      SOURCES against 12.4.1 and runs the same conformance suite over them.
+
+      Source inclusion rather than ProjectReference is deliberate and necessary.
+      The library compiles against 9.2.0, so its public signatures carry the
+      assembly identity 'Kusto.Language, Version=9.2.0.0'; a project referencing
+      it while overriding the package to 12.4.1 cannot resolve those signatures at
+      compile time. (At runtime the mismatch is fine — .NET resolves by simple name
+      and a higher version satisfies a lower reference — which is exactly why the
+      minimum-not-exact pin works in Platform's process.)
+
+      Compiling the sources here is the stronger test anyway: it proves the library
+      only uses API that EXISTS in 12.4.1, which a binary reference cannot tell you.
+
+      Both source sets are linked, never copied. Two copies would drift, and a
+      conformance suite that differs between the versions it compares proves nothing.
+    -->
+    <Compile Include="../../src/DeltaZulu.Kql/*.cs" LinkBase="Library" />
+    <Compile Include="../DeltaZulu.Kql.Tests/*.cs" LinkBase="Conformance" />
+  </ItemGroup>
+
+</Project>

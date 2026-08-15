@@ -1,0 +1,19 @@
+<Project>
+  <ItemGroup>
+    <!--
+      MINIMUM, not exact. CON-0006: Rx.Kql 3.5.3 floors the Agent process at
+      Kusto.Language 9.2.0 while Platform runs 12.4.1, and this assembly must
+      bind against both. A bracket pin here would make one of the two hosts
+      unable to load it.
+
+      Only API verified identical across 9.2.0 and 12.4.1 may be used:
+      ScalarTypes.All, ScalarSymbol.IsWiderThan, ScalarSymbol.From,
+      ScalarTypes.GetSymbol. See DeltaZulu-OU/docs reports/2026-08-15-kusto-language-preflight.md
+    -->
+    <PackageVersion Include="Microsoft.Azure.Kusto.Language" Version="9.2.0" />
+    <!-- Testing -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageVersion Include="MSTest.TestAdapter" Version="4.3.3" />
+    <PackageVersion Include="MSTest.TestFramework" Version="4.3.3" />
+  </ItemGroup>
+</Project>

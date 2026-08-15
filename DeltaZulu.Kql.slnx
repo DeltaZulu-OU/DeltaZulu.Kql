@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DeltaZulu.Kql/DeltaZulu.Kql.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DeltaZulu.Kql.Tests/DeltaZulu.Kql.Tests.csproj" />
+    <Project Path="tests/DeltaZulu.Kql.Tests.V1241/DeltaZulu.Kql.Tests.V1241.csproj" />
+  </Folder>
+</Solution>
