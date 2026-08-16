@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>DeltaZulu.Kql</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>The DeltaZulu KQL type contract: surfaced scalar types, their CLR carriers, and per-field normalisation that never throws and never rounds.</Description>
+    <PackageReadmeFile>PACKAGE_README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Minimum, not exact. See Directory.Packages.props and CON-0006. -->
+    <PackageReference Include="Microsoft.Azure.Kusto.Language" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="PACKAGE_README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
