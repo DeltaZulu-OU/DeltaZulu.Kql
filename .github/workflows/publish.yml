@@ -51,59 +51,14 @@ jobs:
           echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
           echo "tag=v$package_version" >> "$GITHUB_OUTPUT"
 
-      # Deliberately stronger than "the tag is free".
-      #
-      # LocalStream's source was edited from an implicit 1.0.0 down to an explicit
-      # 0.1.0 AFTER 1.0.0 had been published, which satisfied a tag-free check
-      # while inverting its intent: consumers pinned at 1.0.0 would never resolve
-      # the new package. A guard that only asks "is this tag unused" cannot catch
-      # a version going backwards. This one compares against the highest tag that
-      # already exists.
+      # The guard lives in a script shared verbatim by every publishing repo, so
+      # the four cannot drift. It prefers the package feed over tags because tags
+      # record only what a tagging workflow published - DurableBuffer publishes
+      # without tagging at all, so its released 1.0.0 is invisible to tags.
       - name: Verify the version moves forward
         env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Tag '$RELEASE_TAG' already exists; update Directory.Build.props to an unpublished version." >&2
-            exit 1
-          fi
-
-          highest="$(git ls-remote --tags --refs origin 'refs/tags/v*' \
-            | sed 's#.*refs/tags/v##' \
-            | sort -V \
-            | tail -n 1)"
-
-          if [ -z "$highest" ]; then
-            echo "No previous release tags; '$PACKAGE_VERSION' is the first."
-            exit 0
-          fi
-
-          # sort -V puts a prerelease after its base version (1.0.0 < 1.0.0-preview.1),
-          # which is the opposite of SemVer, so compare with Python instead.
-          python3 - "$PACKAGE_VERSION" "$highest" <<'PY'
-          import sys
-
-          def key(v):
-              base, _, pre = v.partition("-")
-              nums = tuple(int(p) for p in base.split("."))
-              # A release outranks any prerelease of the same base version.
-              return (nums, 1, ()) if not pre else (nums, 0, tuple(
-                  (0, int(p)) if p.isdigit() else (1, p)
-                  for p in pre.replace("-", ".").split(".")
-              ))
-
-          new, old = sys.argv[1], sys.argv[2]
-          if key(new) <= key(old):
-              raise SystemExit(
-                  f"Version '{new}' does not move forward from the highest published "
-                  f"version '{old}'. Publishing it would leave consumers pinned at "
-                  f"'{old}' unable to resolve it."
-              )
-          print(f"'{new}' moves forward from '{old}'.")
-          PY
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/verify-version-moves-forward.sh DeltaZulu.Kql "${{ steps.version.outputs.package_version }}"
 
       - name: Restore locked dependencies
         run: dotnet restore DeltaZulu.Kql.slnx --locked-mode
