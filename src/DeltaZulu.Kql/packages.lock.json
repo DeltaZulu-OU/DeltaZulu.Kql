@@ -4,9 +4,9 @@
     "net10.0": {
       "Microsoft.Azure.Kusto.Language": {
         "type": "Direct",
-        "requested": "[9.2.0, )",
-        "resolved": "9.2.0",
-        "contentHash": "DwO0Zo97N5J0P2Pom7KWj7LAEtstkX9PEmcdQgyLSvgxFAmn/SPyRTkxxpmMGgOfge7uLKcTqlA1TwC4rHWjcg=="
+        "requested": "[12.4.1, )",
+        "resolved": "12.4.1",
+        "contentHash": "dGBoTUv6G3060cLgWQwqHeKr5afhgXV+cMp0s8hBI8VHXt1EUgP9AqXgbJtnJFH8dmKUppX1YSzJpm5gFUQgVw=="
       }
     }
   }
