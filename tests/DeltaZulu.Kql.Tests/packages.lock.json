@@ -110,7 +110,7 @@
       "deltazulu.kql": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Azure.Kusto.Language": "[9.2.0, )"
+          "Microsoft.Azure.Kusto.Language": "[12.4.1, )"
         }
       }
     }
