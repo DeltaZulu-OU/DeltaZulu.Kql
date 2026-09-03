@@ -569,22 +569,34 @@ internal sealed class KustoQueryTranslator
 
     #region Scalar expressions
 
-    private static ScalarExpr TranslateLiteral(LiteralExpression lit) => lit.Kind switch {
-        SyntaxKind.StringLiteralExpression =>
+    // Every comparison against a Kusto.Language SyntaxKind value in this file
+    // switches on its NAME (via ToString()), never on the enum member itself.
+    // SyntaxKind's underlying integer values are NOT stable across
+    // Kusto.Language versions -- verified: StringLiteralExpression is 439 in
+    // 9.2.0 and 348 in 12.4.1. A `switch` on the enum bakes in the COMPILING
+    // version's numbers as integer constants; since this library compiles
+    // against 9.2.0 (CON-0006) but a consumer such as Platform loads 12.4.1 at
+    // runtime, an enum-valued switch here would silently mismatch on every
+    // case -- confirmed by real cross-repo consumption, not speculation.
+    // Comparing by name instead resolves against whichever version the CLR
+    // actually loaded, because ToString() reads the name from that version's
+    // own metadata.
+    private static ScalarExpr TranslateLiteral(LiteralExpression lit) => lit.Kind.ToString() switch {
+        "StringLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.String),
-        SyntaxKind.LongLiteralExpression =>
+        "LongLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.Long),
-        SyntaxKind.IntLiteralExpression =>
+        "IntLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.Int),
-        SyntaxKind.RealLiteralExpression =>
+        "RealLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.Real),
-        SyntaxKind.BooleanLiteralExpression =>
+        "BooleanLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.Bool),
-        SyntaxKind.NullLiteralExpression =>
+        "NullLiteralExpression" =>
             new LiteralScalar(null, LiteralKind.Null),
-        SyntaxKind.DateTimeLiteralExpression =>
+        "DateTimeLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.DateTime),
-        SyntaxKind.TimespanLiteralExpression =>
+        "TimespanLiteralExpression" =>
             new LiteralScalar(lit.LiteralValue, LiteralKind.Timespan),
         // Per architecture constraint: unsupported constructs are rejected, not
         // silently approximated. Promoting an unknown literal kind to String would
@@ -603,63 +615,64 @@ internal sealed class KustoQueryTranslator
     {
         var left = TranslateScalarExpr(bin.Left);
         var right = TranslateScalarExpr(bin.Right);
+        var kindName = bin.Kind.ToString();
 
-        var op = bin.Kind switch {
-            SyntaxKind.EqualExpression => ScalarBinaryOp.Eq,
-            SyntaxKind.NotEqualExpression => ScalarBinaryOp.Neq,
-            SyntaxKind.LessThanExpression => ScalarBinaryOp.Lt,
-            SyntaxKind.LessThanOrEqualExpression => ScalarBinaryOp.Lte,
-            SyntaxKind.GreaterThanExpression => ScalarBinaryOp.Gt,
-            SyntaxKind.GreaterThanOrEqualExpression => ScalarBinaryOp.Gte,
-            SyntaxKind.AndExpression => ScalarBinaryOp.And,
-            SyntaxKind.OrExpression => ScalarBinaryOp.Or,
-            SyntaxKind.AddExpression => ScalarBinaryOp.Add,
-            SyntaxKind.SubtractExpression => ScalarBinaryOp.Sub,
-            SyntaxKind.MultiplyExpression => ScalarBinaryOp.Mul,
-            SyntaxKind.DivideExpression => ScalarBinaryOp.Div,
-            SyntaxKind.ModuloExpression => ScalarBinaryOp.Mod,
+        var op = kindName switch {
+            "EqualExpression" => ScalarBinaryOp.Eq,
+            "NotEqualExpression" => ScalarBinaryOp.Neq,
+            "LessThanExpression" => ScalarBinaryOp.Lt,
+            "LessThanOrEqualExpression" => ScalarBinaryOp.Lte,
+            "GreaterThanExpression" => ScalarBinaryOp.Gt,
+            "GreaterThanOrEqualExpression" => ScalarBinaryOp.Gte,
+            "AndExpression" => ScalarBinaryOp.And,
+            "OrExpression" => ScalarBinaryOp.Or,
+            "AddExpression" => ScalarBinaryOp.Add,
+            "SubtractExpression" => ScalarBinaryOp.Sub,
+            "MultiplyExpression" => ScalarBinaryOp.Mul,
+            "DivideExpression" => ScalarBinaryOp.Div,
+            "ModuloExpression" => ScalarBinaryOp.Mod,
             // Case-insensitive equality
-            SyntaxKind.EqualTildeExpression => ScalarBinaryOp.Eq,
-            SyntaxKind.BangTildeExpression => ScalarBinaryOp.Neq,
+            "EqualTildeExpression" => ScalarBinaryOp.Eq,
+            "BangTildeExpression" => ScalarBinaryOp.Neq,
             // String operators — case-insensitive (default)
-            SyntaxKind.ContainsExpression => ScalarBinaryOp.Contains,
-            SyntaxKind.NotContainsExpression => ScalarBinaryOp.NotContains,
-            SyntaxKind.StartsWithExpression => ScalarBinaryOp.StartsWith,
-            SyntaxKind.NotStartsWithExpression => ScalarBinaryOp.NotStartsWith,
-            SyntaxKind.EndsWithExpression => ScalarBinaryOp.EndsWith,
-            SyntaxKind.NotEndsWithExpression => ScalarBinaryOp.NotEndsWith,
+            "ContainsExpression" => ScalarBinaryOp.Contains,
+            "NotContainsExpression" => ScalarBinaryOp.NotContains,
+            "StartsWithExpression" => ScalarBinaryOp.StartsWith,
+            "NotStartsWithExpression" => ScalarBinaryOp.NotStartsWith,
+            "EndsWithExpression" => ScalarBinaryOp.EndsWith,
+            "NotEndsWithExpression" => ScalarBinaryOp.NotEndsWith,
             // String operators — case-sensitive (_cs variants)
-            SyntaxKind.ContainsCsExpression => ScalarBinaryOp.ContainsCs,
-            SyntaxKind.NotContainsCsExpression => ScalarBinaryOp.NotContainsCs,
-            SyntaxKind.StartsWithCsExpression => ScalarBinaryOp.StartsWithCs,
-            SyntaxKind.NotStartsWithCsExpression => ScalarBinaryOp.NotStartsWithCs,
-            SyntaxKind.EndsWithCsExpression => ScalarBinaryOp.EndsWithCs,
-            SyntaxKind.NotEndsWithCsExpression => ScalarBinaryOp.NotEndsWithCs,
+            "ContainsCsExpression" => ScalarBinaryOp.ContainsCs,
+            "NotContainsCsExpression" => ScalarBinaryOp.NotContainsCs,
+            "StartsWithCsExpression" => ScalarBinaryOp.StartsWithCs,
+            "NotStartsWithCsExpression" => ScalarBinaryOp.NotStartsWithCs,
+            "EndsWithCsExpression" => ScalarBinaryOp.EndsWithCs,
+            "NotEndsWithCsExpression" => ScalarBinaryOp.NotEndsWithCs,
             // In/!in/in~/!in~ are represented by the Kusto.Language InExpression node type,
             // not BinaryExpression, so they never reach this switch — see TranslateInExpression.
             // Has — word-boundary match (approximated via regex \b in DuckDB)
-            SyntaxKind.HasExpression => ScalarBinaryOp.Has,
-            SyntaxKind.NotHasExpression => ScalarBinaryOp.NotHas,
-            SyntaxKind.HasCsExpression => ScalarBinaryOp.HasCs,
-            SyntaxKind.NotHasCsExpression => ScalarBinaryOp.NotHasCs,
+            "HasExpression" => ScalarBinaryOp.Has,
+            "NotHasExpression" => ScalarBinaryOp.NotHas,
+            "HasCsExpression" => ScalarBinaryOp.HasCs,
+            "NotHasCsExpression" => ScalarBinaryOp.NotHasCs,
             // Has prefix/suffix — case-insensitive and case-sensitive variants
-            SyntaxKind.HasPrefixExpression => ScalarBinaryOp.HasPrefix,
-            SyntaxKind.NotHasPrefixExpression => ScalarBinaryOp.NotHasPrefix,
-            SyntaxKind.HasPrefixCsExpression => ScalarBinaryOp.HasPrefixCs,
-            SyntaxKind.NotHasPrefixCsExpression => ScalarBinaryOp.NotHasPrefixCs,
-            SyntaxKind.HasSuffixExpression => ScalarBinaryOp.HasSuffix,
-            SyntaxKind.NotHasSuffixExpression => ScalarBinaryOp.NotHasSuffix,
-            SyntaxKind.HasSuffixCsExpression => ScalarBinaryOp.HasSuffixCs,
-            SyntaxKind.NotHasSuffixCsExpression => ScalarBinaryOp.NotHasSuffixCs,
+            "HasPrefixExpression" => ScalarBinaryOp.HasPrefix,
+            "NotHasPrefixExpression" => ScalarBinaryOp.NotHasPrefix,
+            "HasPrefixCsExpression" => ScalarBinaryOp.HasPrefixCs,
+            "NotHasPrefixCsExpression" => ScalarBinaryOp.NotHasPrefixCs,
+            "HasSuffixExpression" => ScalarBinaryOp.HasSuffix,
+            "NotHasSuffixExpression" => ScalarBinaryOp.NotHasSuffix,
+            "HasSuffixCsExpression" => ScalarBinaryOp.HasSuffixCs,
+            "NotHasSuffixCsExpression" => ScalarBinaryOp.NotHasSuffixCs,
             // Regex — note: !matches regex does not exist as a SyntaxKind;
             // negation is wrapped in UnaryNotExpression by the parser
-            SyntaxKind.MatchesRegexExpression => ScalarBinaryOp.MatchesRegex,
+            "MatchesRegexExpression" => ScalarBinaryOp.MatchesRegex,
             _ => throw new NotSupportedException(
                 $"Unsupported binary operator: {bin.Kind}")
         };
 
         // For =~ and !~, wrap both sides in tolower() for case-insensitive comparison
-        if (bin.Kind is SyntaxKind.EqualTildeExpression or SyntaxKind.BangTildeExpression)
+        if (kindName is "EqualTildeExpression" or "BangTildeExpression")
         {
             left = new FunctionCall("tolower", [left]);
             right = new FunctionCall("tolower", [right]);
@@ -766,11 +779,12 @@ internal sealed class KustoQueryTranslator
         // kinds. `in`/`!in` are case-sensitive (KQL default); `in~`/`!in~` are
         // case-insensitive — the reverse of the contains/has convention, where the bare
         // form is case-insensitive and the _cs suffix is case-sensitive.
-        var op = expr.Kind is SyntaxKind.NotInExpression or SyntaxKind.NotInCsExpression
+        var kindName = expr.Kind.ToString();
+        var op = kindName is "NotInExpression" or "NotInCsExpression"
             ? ScalarBinaryOp.NotIn
             : ScalarBinaryOp.In;
 
-        if (expr.Kind is SyntaxKind.InCsExpression or SyntaxKind.NotInCsExpression)
+        if (kindName is "InCsExpression" or "NotInCsExpression")
         {
             left = new FunctionCall("tolower", [left]);
             items = items.Select(item => (ScalarExpr)new FunctionCall("tolower", [item])).ToList();
@@ -840,11 +854,11 @@ internal sealed class KustoQueryTranslator
         var operand = TranslateScalarExpr(un.Expression);
         // KQL only has unary plus and minus as PrefixUnaryExpression.
         // KQL 'not(expr)' is a FunctionCallExpression handled in TranslateFunctionCall.
-        return un.Kind switch {
-            SyntaxKind.UnaryMinusExpression => new UnaryScalar(ScalarUnaryOp.Negate, operand),
+        return un.Kind.ToString() switch {
+            "UnaryMinusExpression" => new UnaryScalar(ScalarUnaryOp.Negate, operand),
             // Unary plus is the identity operation: +x == x. Returning a Negate
             // here would flip the sign and silently corrupt the value.
-            SyntaxKind.UnaryPlusExpression => operand,
+            "UnaryPlusExpression" => operand,
             _ => throw new NotSupportedException($"Unsupported unary operator: {un.Kind}")
         };
     }

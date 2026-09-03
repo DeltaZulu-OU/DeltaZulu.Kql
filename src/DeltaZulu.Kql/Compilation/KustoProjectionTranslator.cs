@@ -41,7 +41,10 @@ internal sealed class KustoProjectionTranslator
             var directionToken = ordered.Ordering?.GetFirstToken();
             if (directionToken is not null)
             {
-                direction = directionToken.Kind == SyntaxKind.AscKeyword ? SortDirection.Asc : SortDirection.Desc;
+                // Compared by name, not by enum value -- see the note on
+                // Kusto.Language SyntaxKind version-instability in
+                // KustoQueryTranslator.TranslateLiteral.
+                direction = directionToken.Kind.ToString() == "AscKeyword" ? SortDirection.Asc : SortDirection.Desc;
             }
         }
         return new SortExpr(_translateScalarExpr(columnExpr), direction);
