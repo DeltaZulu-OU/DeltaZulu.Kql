@@ -1,5 +1,4 @@
 using DeltaZulu.Kql.Compilation;
-using Kusto.Language.Symbols;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace DeltaZulu.Kql.Tests.Compilation;
@@ -11,9 +10,9 @@ public sealed class KqlSchemaCatalogTests
     [
         new KqlTableSchema("ProcessEvent",
         [
-            new KqlColumnSchema("Timestamp", ScalarTypes.DateTime),
-            new KqlColumnSchema("ProcessId", ScalarTypes.Long),
-            new KqlColumnSchema("FileName", ScalarTypes.String),
+            new KqlColumnSchema("Timestamp", "datetime"),
+            new KqlColumnSchema("ProcessId", "long"),
+            new KqlColumnSchema("FileName", "string"),
         ]),
     ]);
 

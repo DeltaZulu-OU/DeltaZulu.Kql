@@ -27,7 +27,7 @@ public static class KqlGlobalStateFactory
 
     private static TableSymbol ToTableSymbol(KqlTableSchema table)
     {
-        var schema = "(" + string.Join(", ", table.Columns.Select(c => $"{c.Name}: {c.Type.Name}")) + ")";
+        var schema = "(" + string.Join(", ", table.Columns.Select(c => $"{c.Name}: {c.TypeName}")) + ")";
         return new TableSymbol(table.Name, schema);
     }
 }
