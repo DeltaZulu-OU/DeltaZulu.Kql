@@ -32,8 +32,8 @@
       Both source sets are linked, never copied. Two copies would drift, and a
       conformance suite that differs between the versions it compares proves nothing.
     -->
-    <Compile Include="../../src/DeltaZulu.Kql/*.cs" LinkBase="Library" />
-    <Compile Include="../DeltaZulu.Kql.Tests/*.cs" LinkBase="Conformance" />
+    <Compile Include="../../src/DeltaZulu.Kql/**/*.cs" Exclude="../../src/DeltaZulu.Kql/**/bin/**;../../src/DeltaZulu.Kql/**/obj/**" LinkBase="Library" />
+    <Compile Include="../DeltaZulu.Kql.Tests/**/*.cs" Exclude="../DeltaZulu.Kql.Tests/**/bin/**;../DeltaZulu.Kql.Tests/**/obj/**" LinkBase="Conformance" />
   </ItemGroup>
 
 </Project>
