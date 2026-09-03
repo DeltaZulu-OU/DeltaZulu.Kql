@@ -1,0 +1,1073 @@
+using DeltaZulu.Kql.Compilation;
+using DeltaZulu.Kql.Relational;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+namespace DeltaZulu.Kql.Tests.Compilation;
+
+/// <summary>
+/// Red-green-refactor harness for KQL → RelNode translation, migrated from
+/// DeltaZulu.Platform's KustoToRelationalTests. Each test specifies a KQL input
+/// and asserts the shape of the resulting RelNode tree.
+/// </summary>
+[TestClass]
+public sealed class KqlRelationalCompilerTests
+{
+    private static readonly KqlRelationalCompiler Compiler = new();
+
+    private static KqlCompilationResult Translate(string kql) =>
+        Compiler.Compile(kql, CanonicalTestCatalog.Instance);
+
+    private static T AssertIs<T>(RelNode? node) where T : RelNode
+    {
+        Assert.IsNotNull(node, "RelNode was null");
+        Assert.IsInstanceOfType(node, typeof(T),
+            $"Expected {typeof(T).Name}, got {node!.GetType().Name}");
+        return (T)node;
+    }
+
+    private static T AssertIs<T>(ScalarExpr? exp) where T : ScalarExpr
+    {
+        Assert.IsNotNull(exp, "ScalarExpr was null");
+        Assert.IsInstanceOfType(exp, typeof(T),
+            $"Expected {typeof(T).Name}, got {exp!.GetType().Name}");
+        return (T)exp;
+    }
+
+    // ─── ScanNode + LimitNode ────────────────────────────────
+
+    [TestMethod]
+    [Description("Bare table reference → ScanNode")]
+    public void Scan_BareTable()
+    {
+        var result = Translate("ProcessEvent");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var scan = AssertIs<ScanNode>(result.Root);
+        Assert.AreEqual("ProcessEvent", scan.ViewName);
+    }
+
+    [TestMethod]
+    [Description("take N → LimitNode wrapping ScanNode")]
+    public void Limit_Take()
+    {
+        var result = Translate("ProcessEvent | take 20");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var limit = AssertIs<LimitNode>(result.Root);
+        Assert.AreEqual(20, limit.Count);
+        AssertIs<ScanNode>(limit.Input);
+    }
+
+    // ─── FilterNode + scalar expressions ─────────────────────
+
+    [TestMethod]
+    [Description("where with string equality → FilterNode")]
+    public void Filter_StringEquality()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName == "powershell.exe" """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.Eq, binary.Op);
+    }
+
+    [TestMethod]
+    [Description("in (list) → BinaryScalar with ScalarBinaryOp.In, case-sensitive (no tolower wrap)")]
+    public void Filter_In_IsCaseSensitive()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName in ("a.exe", "b.exe") """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.In, binary.Op);
+        AssertIs<ColumnRef>(binary.Left);
+    }
+
+    [TestMethod]
+    [Description("!in (list) → BinaryScalar with ScalarBinaryOp.NotIn, not In")]
+    public void Filter_NotIn_ProducesNotIn()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName !in ("a.exe", "b.exe") """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.NotIn, binary.Op);
+    }
+
+    [TestMethod]
+    [Description("in~ (list) → case-insensitive In, both sides wrapped in tolower()")]
+    public void Filter_InCs_IsCaseInsensitive()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName in~ ("A.EXE", "B.EXE") """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.In, binary.Op);
+        var left = AssertIs<FunctionCall>(binary.Left);
+        Assert.AreEqual("tolower", left.Name);
+        var list = AssertIs<ListScalar>(binary.Right);
+        var firstItem = AssertIs<FunctionCall>(list.Items[0]);
+        Assert.AreEqual("tolower", firstItem.Name);
+    }
+
+    [TestMethod]
+    [Description("!in~ (list) → case-insensitive NotIn")]
+    public void Filter_NotInCs_IsCaseInsensitiveNotIn()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName !in~ ("A.EXE", "B.EXE") """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.NotIn, binary.Op);
+        var left = AssertIs<FunctionCall>(binary.Left);
+        Assert.AreEqual("tolower", left.Name);
+    }
+
+    [TestMethod]
+    [Description("where with ago() time comparison")]
+    public void Filter_AgoComparison()
+    {
+        var result = Translate(
+            "ProcessEvent | where Timestamp > ago(7d)");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var binary = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.Gt, binary.Op);
+    }
+
+    [TestMethod]
+    [Description("where with compound predicate (and)")]
+    public void Filter_CompoundAnd()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName == "cmd.exe" and ProcessId > 0""");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var and = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.And, and.Op);
+    }
+
+    // ─── ProjectNode + SortNode ──────────────────────────────
+
+    [TestMethod]
+    [Description("project selecting named columns")]
+    public void Project_NamedColumns()
+    {
+        var result = Translate(
+            "ProcessEvent | project Timestamp, DeviceName, FileName");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var proj = AssertIs<ProjectNode>(result.Root);
+        Assert.HasCount(3, proj.Projections);
+        Assert.AreEqual("Timestamp", proj.Projections[0].Alias);
+    }
+
+    [TestMethod]
+    [Description("sort by with desc direction")]
+    public void Sort_Desc()
+    {
+        var result = Translate(
+            "ProcessEvent | sort by Timestamp desc");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var sort = AssertIs<SortNode>(result.Root);
+        Assert.AreEqual(SortDirection.Desc, sort.Sorts[0].Direction,
+            "KQL default sort direction is DESC");
+    }
+
+    // ─── ExtendNode ──────────────────────────────────────────
+
+    [TestMethod]
+    [Description("extend adding a computed column")]
+    public void Extend_SingleColumn()
+    {
+        var result = Translate(
+            "ProcessEvent | extend lower_name = tolower(FileName)");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        Assert.HasCount(1, ext.Extensions);
+        Assert.AreEqual("lower_name", ext.Extensions[0].Alias);
+    }
+
+    [TestMethod]
+    [Description("chained extend — second extend wraps first")]
+    public void Extend_ChainedReference()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend lower_name = tolower(FileName)
+            | extend name_len = strlen(lower_name)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext2 = AssertIs<ExtendNode>(result.Root);
+        AssertIs<ExtendNode>(ext2.Input);
+    }
+
+    [TestMethod]
+    [Description("extract() with 3 args translates as scalar function call")]
+    public void Extend_Extract_WithOptionalTypeLiteralOmitted()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend EncodedPayload = extract("-enc\\s+([^\\s]+)", 1, ProcessCommandLine)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        Assert.AreEqual("EncodedPayload", ext.Extensions[0].Alias);
+        var fn = AssertIs<FunctionCall>(ext.Extensions[0].Expression);
+        Assert.AreEqual("extract", fn.Name, true);
+        Assert.HasCount(3, fn.Args);
+    }
+
+    [TestMethod]
+    [Description("extract() with verbatim regex string parses and translates")]
+    public void Extend_Extract_WithVerbatimRegexString()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend EncodedPayload = extract(@"-enc\s+([^\s]+)", 1, ProcessCommandLine)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        var fn = AssertIs<FunctionCall>(ext.Extensions[0].Expression);
+        Assert.AreEqual("extract", fn.Name, true);
+        Assert.HasCount(3, fn.Args);
+    }
+
+    [TestMethod]
+    [Description("extract() with 4 args translates as scalar function call")]
+    public void Extend_Extract_WithTypeLiteralProvided()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend EncodedPayload = extract("-enc\\s+([^\\s]+)", 1, ProcessCommandLine, typeof(string))
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        var fn = AssertIs<FunctionCall>(ext.Extensions[0].Expression);
+        Assert.AreEqual("extract", fn.Name, true);
+        Assert.HasCount(4, fn.Args);
+    }
+
+    [TestMethod]
+    [Description("Trivial function batch translates as scalar function calls with expected arity")]
+    public void Extend_TrivialFunctionBatch_ValidArity()
+    {
+        // bag_has_key() is deliberately excluded from this batch: it is not a
+        // registered function in Kusto.Language 9.2.0 (added later), so
+        // KustoCode.ParseAndAnalyze rejects it at the parse phase before the
+        // translator's own arity validation ever runs. That is a genuine
+        // capability difference in the underlying Kusto.Language version, not a
+        // translator defect -- its arity rule is still covered by
+        // Functions_TrivialBatch_InvalidArity, which only asserts *some* error.
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend
+                Arr = strcat_array(split(FileName, ","), ","),
+                Keys = bag_keys(AdditionalFields),
+                Merged = bag_merge(AdditionalFields, AdditionalFields),
+                Len = array_length(split(FileName, ",")),
+                E2 = exp2(3),
+                E10 = exp10(2),
+                Sha256 = hash_sha256(FileName),
+                Md5 = hash_md5(FileName),
+                Translated = translate("abc", "xyz", FileName)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        Assert.HasCount(9, ext.Extensions);
+    }
+
+    [TestMethod]
+    public void Filter_Between_Translates()
+    {
+        var result = Translate("ProcessEvent | where ProcessId between (1 .. 5)");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var filter = AssertIs<FilterNode>(result.Root);
+        var and = AssertIs<BinaryScalar>(filter.Predicate);
+        Assert.AreEqual(ScalarBinaryOp.And, and.Op);
+    }
+
+    [TestMethod]
+    public void Print_TabularFunction_Translates()
+    {
+        var result = Translate("print X=1, Y='a'");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var proj = AssertIs<ProjectNode>(result.Root);
+        Assert.IsInstanceOfType<SingletonRowNode>(proj.Input);
+        Assert.HasCount(2, proj.Projections);
+    }
+
+    // ─── AggregateNode ───────────────────────────────────────
+
+    [TestMethod]
+    [Description("summarize count() by column")]
+    public void Aggregate_CountBy()
+    {
+        var result = Translate(
+            "ProcessEvent | summarize count() by FileName");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var agg = AssertIs<AggregateNode>(result.Root);
+        Assert.HasCount(1, agg.Aggregates);
+        Assert.HasCount(1, agg.GroupBy);
+    }
+
+    [TestMethod]
+    [Description("summarize with multiple aggregates")]
+    public void Aggregate_MultipleAggregates()
+    {
+        // "earliest" (unlike "earliest_ts") is a reserved identifier in
+        // Kusto.Language 9.2.0 -- valid again in 12.4.1 -- so it is avoided here
+        // to keep this test's KQL portable across the supported version span.
+        var result = Translate(
+            "ProcessEvent | summarize event_count = count(), earliest_ts = min(Timestamp) by DeviceName");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var agg = AssertIs<AggregateNode>(result.Root);
+        Assert.HasCount(2, agg.Aggregates);
+    }
+
+    // ─── LetBindingNode ──────────────────────────────────────
+
+    [TestMethod]
+    [Description("scalar let binding")]
+    public void Let_ScalarBinding()
+    {
+        var result = Translate(
+            "let cutoff = ago(7d); ProcessEvent | where Timestamp > cutoff");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var let_ = AssertIs<LetBindingNode>(result.Root);
+        Assert.AreEqual("cutoff", let_.Name);
+        Assert.IsNotNull(let_.ScalarValue);
+    }
+
+    // ─── Composed pipelines ─────────────────────────────────────────
+
+    [TestMethod]
+    [Description("Full vertical slice: where + project + take")]
+    public void Composed_VerticalSlice()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where FileName == "powershell.exe"
+            | project Timestamp, DeviceName, ProcessCommandLine
+            | take 20
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        // LimitNode → ProjectNode → FilterNode → ScanNode
+        var limit = AssertIs<LimitNode>(result.Root);
+        var proj = AssertIs<ProjectNode>(limit.Input);
+        var filter = AssertIs<FilterNode>(proj.Input);
+        AssertIs<ScanNode>(filter.Input);
+    }
+
+    [TestMethod]
+    [Description("Summarize pipeline: where + summarize + sort + take")]
+    public void Composed_SummarizePipeline()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where Timestamp > ago(1d)
+            | summarize count() by FileName
+            | sort by count_ desc
+            | take 10
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var limit = AssertIs<LimitNode>(result.Root);
+        var sort = AssertIs<SortNode>(limit.Input);
+        var agg = AssertIs<AggregateNode>(sort.Input);
+        AssertIs<FilterNode>(agg.Input);
+    }
+
+    // ─── Serialize / Window operators ──────────────────────────────
+
+    [TestMethod]
+    [Description("serialize + prev() → ExtendNode with WindowScalarExpr(lag)")]
+    public void Window_Prev()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | serialize
+            | extend prev_ts = prev(Timestamp)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        Assert.AreEqual("prev_ts", ext.Extensions[0].Alias);
+        Assert.IsInstanceOfType<WindowScalarExpr>(ext.Extensions[0].Expression);
+    }
+
+    [TestMethod]
+    [Description("serialize + next() → ExtendNode with WindowScalarExpr(lead)")]
+    public void Window_Next()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | serialize
+            | extend next_ts = next(Timestamp)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        Assert.IsInstanceOfType<WindowScalarExpr>(ext.Extensions[0].Expression);
+    }
+
+    [TestMethod]
+    [Description("serialize + row_number()")]
+    public void Window_RowNumber()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | serialize rn = row_number()
+            """);
+        // serialize with assignment may parse differently — accept extend or serialize form
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        Assert.IsNotNull(result.Root);
+    }
+
+    [TestMethod]
+    [Description("serialize + row_cumsum() → WindowScalarExpr with frame")]
+    public void Window_RowCumsum()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | summarize event_count = count() by FileName
+            | serialize
+            | extend running_total = row_cumsum(event_count)
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        var winExpr = AssertIs<WindowScalarExpr>(ext.Extensions[0].Expression);
+        Assert.IsNotNull(winExpr.Window.Frame);
+    }
+
+    [TestMethod]
+    [Description("Beaconing detection pattern")]
+    public void Composed_BeaconingPattern()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where FileName == "beacon.exe"
+            | sort by Timestamp asc
+            | serialize
+            | extend prev_ts = prev(Timestamp)
+            | extend gap_seconds = datetime_diff('second', prev_ts, Timestamp)
+            | project Timestamp, DeviceName, gap_seconds
+            | take 100
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        Assert.IsNotNull(result.Root);
+        AssertIs<LimitNode>(result.Root);
+    }
+
+    // ─── Spec-derived: join rejection ────────────────────────────────
+
+    [TestMethod]
+    [Description("Bare join (no kind=) must be REJECTED")]
+    public void Join_BareDefault_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsTrue(result.HasErrors, "Bare join should be rejected");
+        Assert.Contains(d => d.Message.Contains("innerunique") || d.Message.Contains("Bare"), result.Diagnostics,
+            "Diagnostic should mention innerunique or bare join semantics");
+    }
+
+    [TestMethod]
+    [Description("join kind=leftsemi → JoinNode with LeftSemi")]
+    public void Join_LeftSemi()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=leftsemi (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.LeftSemi, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("join kind=leftanti → JoinNode with LeftAnti")]
+    public void Join_LeftAnti()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=leftanti (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.LeftAnti, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("join kind=rightouter → JoinNode with RightOuter")]
+    public void Join_RightOuter()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=rightouter (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.RightOuter, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("join kind=fullouter → JoinNode with FullOuter")]
+    public void Join_FullOuter()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=fullouter (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.FullOuter, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("join kind=rightsemi → JoinNode with RightSemi")]
+    public void Join_RightSemi()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=rightsemi (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.RightSemi, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("join kind=rightanti → JoinNode with RightAnti")]
+    public void Join_RightAnti()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=rightanti (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.RightAnti, join.Kind);
+    }
+
+    [TestMethod]
+    [Description("lookup on Col translates to leftouter JoinNode")]
+    public void Lookup_TranslatesToLeftOuterJoin()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | lookup (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        Assert.AreEqual(JoinKind.LeftOuter, join.Kind);
+        Assert.AreEqual(JoinFlavor.Lookup, join.Flavor);
+    }
+
+    [TestMethod]
+    [Description("lookup without on clause is rejected with diagnostic")]
+    public void Lookup_WithoutOnClause_IsRejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | lookup (ProcessEvent | take 5)
+            """);
+        Assert.IsNull(result.Root);
+        Assert.IsTrue(result.HasErrors, "lookup without on clause should fail");
+        Assert.Contains(d =>
+                string.Equals(d.Detail, "KQL_LOOKUP_NO_CONDITION", StringComparison.OrdinalIgnoreCase) ||
+                d.Message.Contains("Missing join on condition clause", StringComparison.OrdinalIgnoreCase), result.Diagnostics,
+            string.Join("\n", result.Diagnostics));
+    }
+
+    [TestMethod]
+    [Description("lookup on multiple columns combines predicates with AND")]
+    public void Lookup_OnMultipleColumns_CombinesWithAnd()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | lookup (ProcessEvent | take 5) on DeviceName, AccountName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        var and = AssertIs<BinaryScalar>(join.OnPredicate);
+        Assert.AreEqual(ScalarBinaryOp.And, and.Op);
+    }
+
+    [TestMethod]
+    [Description("sample n translates to SampleNode")]
+    public void Sample_TranslatesToSampleNode()
+    {
+        var result = Translate("ProcessEvent | sample 10");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var sample = AssertIs<SampleNode>(result.Root);
+        Assert.AreEqual(10, sample.Count);
+    }
+
+    [TestMethod]
+    [Description("sample with negative number is rejected")]
+    public void Sample_Negative_Rejected()
+    {
+        var result = Translate("ProcessEvent | sample -2");
+        Assert.IsNull(result.Root);
+        Assert.IsTrue(result.HasErrors, "sample with negative should produce error");
+    }
+
+    [TestMethod]
+    [Description("sample-distinct n of Col translates to DistinctNode followed by SampleNode")]
+    public void SampleDistinct_TranslatesToNode()
+    {
+        var result = Translate("ProcessEvent | sample-distinct 5 of FileName");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var sample = AssertIs<SampleNode>(result.Root);
+        Assert.AreEqual(5, sample.Count);
+        var distinct = AssertIs<DistinctNode>(sample.Input);
+        Assert.HasCount(1, distinct.Projections);
+        var col = AssertIs<ColumnRef>(distinct.Projections[0].Expression);
+        Assert.AreEqual("FileName", col.Name);
+    }
+
+    [TestMethod]
+    [Description("Bare-column join 'on Col' produces $left.Col == $right.Col, not Col == Col")]
+    public void Join_OnCondition_QualifiesEachSide()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | join kind=inner (ProcessEvent | take 5) on DeviceName
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var join = AssertIs<JoinNode>(result.Root);
+        var predicate = AssertIs<BinaryScalar>(join.OnPredicate);
+        var left = AssertIs<ColumnRef>(predicate.Left);
+        var right = AssertIs<ColumnRef>(predicate.Right);
+        Assert.AreEqual(JoinSide.Left, left.Qualifier, "left side must carry the $left qualifier");
+        Assert.AreEqual(JoinSide.Right, right.Qualifier, "right side must carry the $right qualifier");
+    }
+
+    // ─── Unary operators ─────────────────────────────────────────────
+
+    [TestMethod]
+    [Description("Unary plus is identity: +x translates to x, not -x")]
+    public void UnaryPlus_IsIdentity()
+    {
+        var result = Translate("ProcessEvent | extend Doubled = +ProcessId");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        // +ProcessId must be the bare column reference, never a UnaryScalar(Negate).
+        var col = AssertIs<ColumnRef>(ext.Extensions[0].Expression);
+        Assert.AreEqual("ProcessId", col.Name);
+    }
+
+    // ─── Multi-statement routing ─────────────────────────────────────
+
+    [TestMethod]
+    [Description("Multiple query statements are rejected, not silently dropped")]
+    public void MultipleQueryStatements_Rejected()
+    {
+        var result = Translate(
+            "ProcessEvent | take 5; ProcessEvent | take 3");
+        Assert.IsTrue(result.HasErrors,
+            "Two query expressions should be rejected rather than silently dropping the first");
+        Assert.IsNull(result.Root);
+    }
+
+    // ─── case() function ──────────────────────────────────────────
+
+    [TestMethod]
+    [Description("case(c1, v1, c2, v2, default) translates to CaseScalar")]
+    public void Case_Function_TranslatesToCaseScalar()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend severity = case(
+                ProcessId > 1000, "high",
+                ProcessId > 100, "medium",
+                "low")
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        AssertIs<CaseScalar>(ext.Extensions[0].Expression);
+    }
+
+    [TestMethod]
+    [Description("case() with single branch plus default")]
+    public void Case_SingleBranch_TranslatesToCaseScalar()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | extend label = case(ProcessId > 0, "positive", "non-positive")
+            """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var ext = AssertIs<ExtendNode>(result.Root);
+        var cs = AssertIs<CaseScalar>(ext.Extensions[0].Expression);
+        Assert.AreEqual(1, cs.Branches.Count);
+    }
+
+    // ─── Spec-derived: sort default direction ────────────────────
+
+    [TestMethod]
+    [Description("sort by Column (no direction) defaults to DESC in KQL")]
+    public void Sort_DefaultDesc()
+    {
+        var result = Translate(
+            "ProcessEvent | sort by Timestamp");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        var sort = AssertIs<SortNode>(result.Root);
+        Assert.AreEqual(SortDirection.Desc, sort.Sorts[0].Direction,
+            "KQL default sort direction is DESC");
+    }
+
+    // ─── Spec-derived: case-insensitive equality ─────────────────
+
+    [TestMethod]
+    [Description("=~ case-insensitive equality")]
+    public void Filter_CaseInsensitiveEq()
+    {
+        var result = Translate(
+            """ProcessEvent | where FileName =~ "Powershell.EXE" """);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Diagnostics));
+        AssertIs<FilterNode>(result.Root);
+    }
+
+    // ─── Policy: unapproved table rejected ──────────────────────────
+
+    [TestMethod]
+    [Description("Unapproved table name produces parse error")]
+    public void Parse_UnapprovedTable()
+    {
+        var result = Translate("silver.secret_table | take 10");
+        Assert.IsTrue(result.HasErrors);
+        AssertPolicyOrParseError(result);
+    }
+
+    [TestMethod]
+    [Description("Semicolon and dot-command text inside string literal should not be treated as mixed statements")]
+    public void Policy_SemicolonDotInsideStringLiteral_NotMixedStatement()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where ProcessCommandLine contains "; .drop table silver.secret"
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("Query followed by executable management dot-command must be rejected")]
+    public void Policy_QueryFollowedByDotCommand_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where FileName == "cmd.exe";
+            .drop table ProcessEvent
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyError(result);
+    }
+
+    [TestMethod]
+    [Description("Management dot-command followed by query must be rejected")]
+    public void Policy_DotCommandFollowedByQuery_Rejected()
+    {
+        var result = Translate(
+            """
+            .drop table ProcessEvent;
+            ProcessEvent
+            | take 1
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyError(result);
+    }
+
+    [TestMethod]
+    [Description("Single management dot-command must be rejected")]
+    public void Policy_SingleDotCommand_Rejected()
+    {
+        var result = Translate(
+            """
+            .show tables
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyError(result);
+    }
+
+    [TestMethod]
+    [Description("Dot-command after newline without semicolon must be rejected if parser recognizes it as executable input")]
+    public void Policy_QueryThenDotCommandOnNewLine_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | take 1
+            .drop table ProcessEvent
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrParseError(result);
+    }
+
+    [TestMethod]
+    [Description("Multiple query statements must be rejected rather than silently translating only one")]
+    public void Policy_TwoQueryStatements_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent | take 1;
+            NetworkSession | take 1
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertDiagnosticContaining(result, "Multiple query statements");
+    }
+
+    [TestMethod]
+    [Description("Let bindings may precede the final query")]
+    public void Policy_LetBindingThenQuery_Allowed()
+    {
+        var result = Translate(
+            """
+            let TargetFile = "cmd.exe";
+            ProcessEvent
+            | where FileName == TargetFile
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("Let binding followed by dot-command must be rejected")]
+    public void Policy_LetBindingThenDotCommand_Rejected()
+    {
+        var result = Translate(
+            """
+            let TargetFile = "cmd.exe";
+            .drop table ProcessEvent
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyError(result);
+    }
+
+    [TestMethod]
+    [Description("Dot-command text inside let string value must not trigger policy error")]
+    public void Policy_DotCommandInsideLetString_Allowed()
+    {
+        var result = Translate(
+            """
+            let Suspicious = "; .drop table ProcessEvent";
+            ProcessEvent
+            | where ProcessCommandLine contains Suspicious
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("SQL-looking injection text inside string literal must remain inert")]
+    public void Policy_SqlInjectionTextInsideStringLiteral_Allowed()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where ProcessCommandLine contains "'; DROP TABLE ProcessEvent; --"
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("SQL comment marker inside string literal must remain inert")]
+    public void Policy_SqlCommentMarkerInsideStringLiteral_Allowed()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where ProcessCommandLine contains "-- pretend SQL comment"
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("Semicolon inside string literal must not split KQL statements")]
+    public void Policy_SemicolonInsideStringLiteral_Allowed()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where ProcessCommandLine contains "cmd.exe; whoami; hostname"
+            | take 1
+            """);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("Single quote inside KQL string should be accepted as literal data")]
+    public void Policy_SingleQuoteInsideStringLiteral_Allowed()
+    {
+        const string kql = """
+        ProcessEvent
+        | where ProcessCommandLine contains "O'Reilly"
+        | take 1
+        """;
+
+        var result = Translate(kql);
+
+        Assert.IsNotNull(result.Root);
+        AssertNoPolicyErrors(result);
+    }
+
+    [TestMethod]
+    [Description("Newline inside string literal must not create a second executable statement")]
+    public void Policy_NewlineInsideStringLiteral_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where ProcessCommandLine contains @"first line
+            .drop table ProcessEvent"
+            | take 1
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyError(result);
+    }
+
+    [TestMethod]
+    [Description("Unapproved table name should be rejected even if query syntax is otherwise valid")]
+    public void Policy_UnapprovedTableName_Rejected()
+    {
+        var result = Translate(
+            """
+            silver.secret
+            | take 1
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrParseError(result);
+    }
+
+    [TestMethod]
+    [Description("Table-name-like SQL injection must not be accepted as a table reference")]
+    public void Policy_TableNameSqlInjection_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent; DROP TABLE ProcessEvent
+            | take 1
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrParseError(result);
+    }
+
+    [TestMethod]
+    [Description("Column-name-like SQL injection must not be accepted as a valid projected column")]
+    public void Policy_ColumnNameSqlInjection_Rejected()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | project FileName, ["x); DROP TABLE ProcessEvent; --"]
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrParseError(result);
+    }
+
+    [TestMethod]
+    [Description("Unsupported KQL command syntax must fail closed")]
+    public void Policy_UnsupportedCommandSyntax_FailsClosed()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | evaluate pivot(FileName)
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrTranslateError(result);
+    }
+
+    [TestMethod]
+    [Description("Malformed input that contains a management command must not translate a recovered partial query")]
+    public void Policy_MalformedQueryWithDotCommand_FailsClosed()
+    {
+        var result = Translate(
+            """
+            ProcessEvent
+            | where FileName ==
+            .drop table ProcessEvent
+            """);
+
+        Assert.IsNull(result.Root);
+        AssertPolicyOrParseError(result);
+    }
+
+    private static void AssertPolicyError(KqlCompilationResult result) => Assert.Contains(
+            d => d.Phase == KqlDiagnosticPhase.Policy, result.Diagnostics,
+            "Expected at least one policy diagnostic.");
+
+    private static void AssertNoPolicyErrors(KqlCompilationResult result) => Assert.DoesNotContain(
+            d => d.Phase == KqlDiagnosticPhase.Policy, result.Diagnostics,
+            "Expected no policy diagnostics.");
+
+    private static void AssertPolicyOrParseError(KqlCompilationResult result) => Assert.Contains(
+            d =>
+                d.Phase == KqlDiagnosticPhase.Policy ||
+                d.Phase == KqlDiagnosticPhase.Parse, result.Diagnostics,
+            "Expected a policy or parse diagnostic.");
+
+    private static void AssertPolicyOrTranslateError(KqlCompilationResult result) => Assert.Contains(
+            d =>
+                d.Phase == KqlDiagnosticPhase.Policy ||
+                d.Phase == KqlDiagnosticPhase.Translate, result.Diagnostics,
+            "Expected a policy or translation diagnostic.");
+
+    private static void AssertDiagnosticContaining(KqlCompilationResult result, string text) => Assert.Contains(
+            d => d.Message.Contains(text, StringComparison.OrdinalIgnoreCase), result.Diagnostics,
+            $"Expected diagnostic containing: {text}");
+}
